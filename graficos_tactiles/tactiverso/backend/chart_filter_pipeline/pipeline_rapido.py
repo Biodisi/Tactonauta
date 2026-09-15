@@ -7,7 +7,7 @@ import sys
 import fitz  # PyMuPDF
 from PIL import Image
 
-from classify_charts import es_grafico_lineal
+from graficos_tactiles.tactiverso.backend.chart_filter_pipeline.classify_charts import es_grafico_lineal
 
 AREA_MINIMA = 15000
 CARPETA_RESULTADOS = "resultados_rapido"
