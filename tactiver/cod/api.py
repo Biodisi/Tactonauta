@@ -13,8 +13,61 @@ Ejecutar:
     (queda escuchando en http://localhost:5000)
 
 ------------------------------------------------------------------
+FLUJO COMPLETO (PDF -> gráficas detectadas -> segmentación -> CSV)
+------------------------------------------------------------------
+
+1) POST /api/clasificar
+   Subes el PDF completo. Corre pipeline_rapido.py (sin DePlot: solo
+   extracción + filtros baratos + clasificación geométrica) y devuelve
+   la lista de figuras encontradas, cada una con su tipo (línea, barra
+   o torta, compuesta, indeterminado) y una URL de vista previa.
+
+2) POST /api/segmentar/<id>
+   Con el "id" que te devolvió /api/clasificar para una figura de tipo
+   línea, corre el segmentador (segmentador.py) sobre ESA imagen
+   puntual (ejes, curva, textos, calibración) y devuelve el mismo
+   resumen + CSV + overlay que /api/procesar.
+
+3) POST /api/procesar
+   Igual que el paso 2, pero recibiendo la imagen directo (sin pasar
+   primero por /api/clasificar) — útil si ya tienes la imagen de un
+   solo gráfico y no un PDF completo.
+
+------------------------------------------------------------------
 ENDPOINTS
 ------------------------------------------------------------------
+
+POST /api/clasificar
+    Recibe un PDF (multipart/form-data, campo "pdf") y devuelve la
+    lista de figuras detectadas.
+
+    curl -F "pdf=@paper.pdf" http://localhost:5000/api/clasificar
+
+    Respuesta:
+    {
+      "ok": true,
+      "lote_id": "a1b2c3d4",
+      "graficos": [
+        {
+          "id": "a1b2c3d4_page2_img1.png",
+          "pagina": 2,
+          "ancho": 420, "alto": 260,
+          "tipo": "linea",
+          "confianza": 0.81,
+          "es_lineal": true,
+          "preview_url": "/api/resultados/a1b2c3d4_page2_img1.png"
+        },
+        ...
+      ]
+    }
+
+POST /api/segmentar/<id>
+    <id> es el campo "id" que devolvió /api/clasificar para una figura
+    con "es_lineal": true. No hace falta volver a subir el archivo.
+
+    curl -X POST http://localhost:5000/api/segmentar/a1b2c3d4_page2_img1.png
+
+    Respuesta: igual formato que /api/procesar (ver abajo).
 
 POST /api/procesar
     Recibe una imagen (multipart/form-data, campo "imagen") y devuelve
@@ -37,11 +90,9 @@ POST /api/procesar?formato=csv
     descarga (útil si tu interfaz solo necesita el archivo, sin JSON
     intermedio).
 
-    curl -F "imagen=@grafica.png" "http://localhost:5000/api/procesar?formato=csv" -o resultado.csv
-
 GET /api/resultados/<nombre_archivo>
-    Sirve un archivo ya generado (CSV u overlay PNG) para visualizarlo
-    inline (por ejemplo, para mostrar el overlay en un <img> de tu web).
+    Sirve un archivo ya generado (CSV, overlay PNG o figura extraída
+    del PDF) para visualizarlo inline (por ejemplo, en un <img>).
 
 GET /api/resultados/<nombre_archivo>/descargar
     Igual, pero forzando la descarga (Content-Disposition: attachment).
@@ -52,23 +103,27 @@ GET /api/salud
 """
 
 import os
+import shutil
 import uuid
 
 from flask import Flask, request, jsonify, send_from_directory
 from werkzeug.utils import secure_filename
 
 from segmentador import procesar_imagen
+import pipeline_rapido
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
 RESULTADOS_DIR = os.path.join(BASE_DIR, "resultados")
+CLASIFICACION_DIR = os.path.join(BASE_DIR, "resultados_rapido")
 EXTENSIONES_VALIDAS = {"png", "jpg", "jpeg", "bmp", "tif", "tiff"}
 
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(RESULTADOS_DIR, exist_ok=True)
+os.makedirs(CLASIFICACION_DIR, exist_ok=True)
 
 app = Flask(__name__)
-app.config["MAX_CONTENT_LENGTH"] = 20 * 1024 * 1024  # 20 MB máx por imagen
+app.config["MAX_CONTENT_LENGTH"] = 40 * 1024 * 1024  # 40 MB máx (PDFs pesan más que una imagen suelta)
 
 
 @app.after_request
@@ -92,6 +147,80 @@ def salud():
     return jsonify({"ok": True})
 
 
+# ------------------------------------------------------------------
+# Paso 1: subir el PDF completo y detectar qué tipo de gráficas hay
+# ------------------------------------------------------------------
+@app.route("/api/clasificar", methods=["POST"])
+def clasificar():
+    archivo = request.files.get("pdf")
+
+    if archivo is None or archivo.filename == "":
+        return jsonify({"ok": False, "error": "No se envió ningún PDF (campo 'pdf')."}), 400
+
+    if not archivo.filename.lower().endswith(".pdf"):
+        return jsonify({"ok": False, "error": "El archivo debe ser un PDF."}), 400
+
+    nombre_seguro = secure_filename(archivo.filename)
+    lote_id = uuid.uuid4().hex[:8]
+    ruta_pdf = os.path.join(UPLOAD_DIR, f"{lote_id}_{nombre_seguro}")
+    archivo.save(ruta_pdf)
+
+    output_dir = os.path.join(CLASIFICACION_DIR, f"extraidas_{lote_id}")
+
+    try:
+        detectados = pipeline_rapido.detectar_graficos(ruta_pdf, output_dir)
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"Error al analizar el PDF: {e}"}), 500
+
+    graficos = []
+    for d in detectados:
+        nombre_original = os.path.basename(d["file_path"])
+        nombre_servido = f"{lote_id}_{nombre_original}"
+        ruta_servida = os.path.join(RESULTADOS_DIR, nombre_servido)
+        shutil.copy(d["file_path"], ruta_servida)
+        graficos.append({
+            "id": nombre_servido,
+            "pagina": d["page"],
+            "ancho": round(d["width"]),
+            "alto": round(d["height"]),
+            "tipo": d["tipo"],
+            "confianza": d["confianza"],
+            "es_lineal": d["es_lineal"],
+            "preview_url": f"/api/resultados/{nombre_servido}",
+        })
+
+    return jsonify({"ok": True, "lote_id": lote_id, "graficos": graficos})
+
+
+# ------------------------------------------------------------------
+# Paso 2: segmentar UNA figura ya clasificada (por su id), sin volver
+# a subir el archivo — el segmentador la toma directo de "resultados/"
+# ------------------------------------------------------------------
+@app.route("/api/segmentar/<path:id_grafico>", methods=["POST"])
+def segmentar_extraido(id_grafico):
+    nombre_seguro = secure_filename(id_grafico)
+    ruta_imagen = os.path.join(RESULTADOS_DIR, nombre_seguro)
+
+    if not os.path.isfile(ruta_imagen):
+        return jsonify({"ok": False, "error": "No se encontró esa figura clasificada. Vuelve a subir el PDF."}), 404
+
+    try:
+        resultado = procesar_imagen(ruta_imagen, RESULTADOS_DIR)
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"Error al segmentar la imagen: {e}"}), 500
+
+    return jsonify({
+        "ok": True,
+        "resumen": resultado["resumen"],
+        "csv_url": f"/api/resultados/{resultado['nombre_csv']}",
+        "csv_download_url": f"/api/resultados/{resultado['nombre_csv']}/descargar",
+        "overlay_url": f"/api/resultados/{resultado['nombre_overlay']}",
+    })
+
+
+# ------------------------------------------------------------------
+# Segmentar una imagen suelta (sin pasar por /api/clasificar)
+# ------------------------------------------------------------------
 @app.route("/api/procesar", methods=["POST"])
 def procesar():
     archivo = request.files.get("imagen")
