@@ -648,5 +648,9 @@ def procesar_imagen(ruta_imagen, dir_resultados):
     return {
         "ruta_csv": ruta_csv, "nombre_csv": nombre_csv,
         "ruta_overlay": ruta_overlay, "nombre_overlay": nombre_overlay,
+        "puntos_curva": [
+            {"px": col, "py": fila, "valor_x": x_dato, "valor_y": y_dato}
+            for col, fila, x_dato, y_dato in puntos_curva
+        ],
         "resumen": resumen,
     }

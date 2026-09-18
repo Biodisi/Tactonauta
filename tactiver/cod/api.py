@@ -111,15 +111,18 @@ from werkzeug.utils import secure_filename
 
 from segmentador import procesar_imagen
 import pipeline_rapido
+from generador_stl import generar_modelo_bana, generar_modelo_desde_recta
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
 RESULTADOS_DIR = os.path.join(BASE_DIR, "resultados")
+STL_DIR = os.path.join(RESULTADOS_DIR, "stl")
 CLASIFICACION_DIR = os.path.join(BASE_DIR, "resultados_rapido")
 EXTENSIONES_VALIDAS = {"png", "jpg", "jpeg", "bmp", "tif", "tiff"}
 
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(RESULTADOS_DIR, exist_ok=True)
+os.makedirs(STL_DIR, exist_ok=True)
 os.makedirs(CLASIFICACION_DIR, exist_ok=True)
 
 app = Flask(__name__)
@@ -145,6 +148,111 @@ def extension_valida(nombre_archivo):
 @app.route("/api/salud", methods=["GET"])
 def salud():
     return jsonify({"ok": True})
+
+
+def crear_stl_desde_imagen(ruta_imagen, prefijo="grafica"):
+    """Segmenta una gráfica lineal y convierte sus extremos a una placa STL."""
+    resultado = procesar_imagen(ruta_imagen, RESULTADOS_DIR)
+    nombre = f"{prefijo}_{uuid.uuid4().hex[:8]}.stl"
+    generar_modelo_desde_recta(
+        resultado["puntos_curva"],
+        archivo_salida=os.path.join(STL_DIR, nombre),
+    )
+    return resultado, nombre
+
+
+@app.route("/api/generar-stl", methods=["POST"])
+def generar_stl():
+    """Genera la placa táctil de Fase 1 a partir de dos puntos en mm.
+
+    JSON esperado: {"p1": [x, y], "p2": [x, y], "ancho": 210,
+    "alto": 148, "intervalo_ticks": 25}. Los últimos tres campos son
+    opcionales y las dimensiones se expresan en milímetros.
+    """
+    datos = request.get_json(silent=True)
+    if not isinstance(datos, dict):
+        return jsonify({"ok": False, "error": "Envía un JSON con p1 y p2."}), 400
+    try:
+        p1, p2 = datos["p1"], datos["p2"]
+        if not all(isinstance(p, (list, tuple)) and len(p) == 2 for p in (p1, p2)):
+            raise ValueError("p1 y p2 deben tener dos coordenadas.")
+        p1 = (float(p1[0]), float(p1[1]))
+        p2 = (float(p2[0]), float(p2[1]))
+        ancho = float(datos.get("ancho", 210))
+        alto = float(datos.get("alto", 148))
+        intervalo = int(datos.get("intervalo_ticks", 25))
+        nombre = f"grafica_tactil_{uuid.uuid4().hex[:8]}.stl"
+        generar_modelo_bana(ancho, alto, p1, p2, intervalo, os.path.join(STL_DIR, nombre))
+    except (KeyError, TypeError, ValueError) as e:
+        return jsonify({"ok": False, "error": f"Parámetros inválidos: {e}"}), 400
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"No se pudo generar el STL: {e}"}), 500
+
+    return jsonify({
+        "ok": True,
+        "stl_url": f"/api/resultados/stl/{nombre}",
+        "stl_download_url": f"/api/resultados/stl/{nombre}/descargar",
+    }), 201
+
+
+@app.route("/api/generar-stl/<path:id_grafico>", methods=["POST"])
+def generar_stl_desde_grafico(id_grafico):
+    """Convierte una gráfica extraída previamente por /api/clasificar a STL."""
+    nombre_seguro = secure_filename(id_grafico)
+    ruta_imagen = os.path.join(RESULTADOS_DIR, nombre_seguro)
+    if not os.path.isfile(ruta_imagen):
+        return jsonify({"ok": False, "error": "No se encontró esa gráfica clasificada."}), 404
+    try:
+        resultado, nombre = crear_stl_desde_imagen(ruta_imagen, "grafica_tactil")
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"No se pudo generar el STL: {e}"}), 500
+    return jsonify({
+        "ok": True,
+        "resumen": resultado["resumen"],
+        "csv_url": f"/api/resultados/{resultado['nombre_csv']}",
+        "csv_download_url": f"/api/resultados/{resultado['nombre_csv']}/descargar",
+        "overlay_url": f"/api/resultados/{resultado['nombre_overlay']}",
+        "stl_url": f"/api/resultados/stl/{nombre}",
+        "stl_download_url": f"/api/resultados/stl/{nombre}/descargar",
+    }), 201
+
+
+@app.route("/api/pdf-a-stl", methods=["POST"])
+def pdf_a_stl():
+    """Flujo completo: PDF -> rectas detectadas -> archivos STL."""
+    archivo = request.files.get("pdf")
+    if archivo is None or archivo.filename == "":
+        return jsonify({"ok": False, "error": "No se envió ningún PDF (campo 'pdf')."}), 400
+    if not archivo.filename.lower().endswith(".pdf"):
+        return jsonify({"ok": False, "error": "El archivo debe ser un PDF."}), 400
+
+    lote_id = uuid.uuid4().hex[:8]
+    ruta_pdf = os.path.join(UPLOAD_DIR, f"{lote_id}_{secure_filename(archivo.filename)}")
+    archivo.save(ruta_pdf)
+    try:
+        detectados = pipeline_rapido.detectar_graficos(
+            ruta_pdf, os.path.join(CLASIFICACION_DIR, f"extraidas_{lote_id}")
+        )
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"Error al analizar el PDF: {e}"}), 500
+
+    stls = []
+    for grafico in detectados:
+        if not grafico.get("es_lineal"):
+            continue
+        try:
+            resultado, nombre = crear_stl_desde_imagen(grafico["file_path"], "grafica_tactil")
+            stls.append({
+                "pagina": grafico["page"], "tipo": grafico["tipo"],
+                "resumen": resultado["resumen"],
+                "stl_url": f"/api/resultados/stl/{nombre}",
+                "stl_download_url": f"/api/resultados/stl/{nombre}/descargar",
+            })
+        except Exception as e:
+            stls.append({
+                "pagina": grafico["page"], "tipo": grafico["tipo"], "error": str(e),
+            })
+    return jsonify({"ok": True, "lote_id": lote_id, "n_detectados": len(detectados), "stls": stls})
 
 
 # ------------------------------------------------------------------

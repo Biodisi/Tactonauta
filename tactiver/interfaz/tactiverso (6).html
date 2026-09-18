@@ -223,6 +223,8 @@
   }
   .csv-link:hover { background: var(--gold-soft); border-color: var(--night); }
   .csv-link svg { width: 0.95em; height: 0.95em; flex-shrink: 0; }
+  .stl-link { background: var(--ok); color: #fff; border-color: var(--ok); }
+  .stl-link:hover { background: #1f5223; border-color: #1f5223; }
 
   .csv-list { list-style: none; margin: 1rem 0 0; padding: 0; display: grid; gap: 0.5rem; }
   .csv-list li { display: flex; align-items: center; gap: 0.6rem; }
@@ -371,12 +373,12 @@
     </div>
 
     <div id="segment-results" hidden>
-      <p class="lede">Ejes, curva y textos detectados en cada gráfico de línea. Revisa el overlay de verificación antes de imprimir.</p>
-      <ul class="graphic-list" id="segment-list"><!-- se completa con /api/segmentar --></ul>
+      <p class="lede">Cada gráfico de línea se convierte en una lámina STL. Revisa el overlay y descarga el archivo para imprimirlo.</p>
+      <ul class="graphic-list" id="segment-list"><!-- se completa con /api/generar-stl --></ul>
       <p class="status" role="status" aria-live="polite" id="segment-status"></p>
       <div class="actions">
         <button type="button" class="secondary" data-goto="step-3">Atrás</button>
-        <button type="button" class="primary" id="to-step-5" disabled>Enviar a imprimir</button>
+        <button type="button" class="primary" id="to-step-5" disabled>Ver descargas STL</button>
       </div>
     </div>
   </section>
@@ -387,7 +389,7 @@
     <h2 id="step-5-heading" tabindex="-1">Enviado a impresión</h2>
     <div class="confirm-card">
       <span class="ticket" id="ticket-number">Orden #TV-0000</span>
-      <p id="confirm-detail">Láminas táctiles en camino a la cola de impresión en relieve. Te avisaremos cuando estén listas.</p>
+      <p id="confirm-detail">Tus láminas táctiles STL están listas para descargar e imprimir.</p>
       <ul class="csv-list" id="csv-list"></ul>
     </div>
     <p class="status" role="status" aria-live="polite" id="confirm-status"></p>
@@ -433,7 +435,7 @@
 
   let pdfSeleccionado = null;
   let graficosClasificados = [];   // respuesta de /api/clasificar
-  let resultadosSegmentados = [];  // respuestas de /api/segmentar por cada gráfico de línea
+  let resultadosSegmentados = [];  // respuestas de /api/generar-stl por cada gráfico de línea
 
   function formatSize(bytes) {
     if (bytes < 1024) return bytes + ' B';
@@ -601,8 +603,8 @@
   toStep4.addEventListener('click', () => goTo('step-4'));
 
   // ------------------------------------------------------------
-  // Paso 4: segmentar cada gráfico de línea detectado
-  // (POST /api/segmentar/<id> -> segmentador.procesar_imagen)
+  // Paso 4: segmentar y generar un STL por cada gráfico lineal detectado
+  // (POST /api/generar-stl/<id> -> segmentador + generador STL)
   // ------------------------------------------------------------
   const progressLine4 = document.getElementById('progress-line-4');
   const progressText4 = document.getElementById('progress-text-4');
@@ -702,9 +704,9 @@
 
     let errores = 0;
     for (let i = 0; i < lineales.length; i++) {
-      progressText4.textContent = `Segmentando gráfica ${i + 1} de ${lineales.length}…`;
+      progressText4.textContent = `Creando STL ${i + 1} de ${lineales.length}…`;
       try {
-        const res = await fetch(`${API_BASE}/api/segmentar/${encodeURIComponent(lineales[i].id)}`, { method: 'POST' });
+        const res = await fetch(`${API_BASE}/api/generar-stl/${encodeURIComponent(lineales[i].id)}`, { method: 'POST' });
         const data = await res.json();
         if (!res.ok || !data.ok) throw new Error(data.error || 'Error al segmentar.');
         resultadosSegmentados.push(data);
@@ -720,8 +722,8 @@
     segmentResults.hidden = false;
     toStep5.disabled = resultadosSegmentados.length === 0;
     segmentStatus.textContent = errores === 0
-      ? `${resultadosSegmentados.length} gráfica(s) segmentada(s) y lista(s) para imprimir.`
-      : `${resultadosSegmentados.length} gráfica(s) segmentada(s), ${errores} con error.`;
+      ? `${resultadosSegmentados.length} STL generado(s) y listo(s) para descargar.`
+      : `${resultadosSegmentados.length} STL generado(s), ${errores} con error.`;
     if (errores > 0) segmentStatus.classList.add('error');
   }
 
@@ -729,17 +731,17 @@
     const ticket = 'Orden #TV-' + Math.floor(1000 + Math.random() * 9000);
     document.getElementById('ticket-number').textContent = ticket;
     document.getElementById('confirm-detail').textContent =
-      `${resultadosSegmentados.length} lámina(s) táctil(es) en camino a la cola de impresión en relieve.`;
+      `${resultadosSegmentados.length} lámina(s) táctil(es) STL lista(s) para descargar.`;
 
     const csvList = document.getElementById('csv-list');
     csvList.innerHTML = '';
     resultadosSegmentados.forEach((r, idx) => {
-      if (!r.csv_download_url) return;
+      if (!r.stl_download_url) return;
       const li = document.createElement('li');
       const link = document.createElement('a');
-      link.className = 'csv-link';
-      link.href = API_BASE + r.csv_download_url;
-      link.textContent = `Descargar CSV ${idx + 1} de ${resultadosSegmentados.length}`;
+      link.className = 'csv-link stl-link';
+      link.href = API_BASE + r.stl_download_url;
+      link.textContent = `Descargar STL ${idx + 1} de ${resultadosSegmentados.length}`;
       link.setAttribute('download', '');
       li.appendChild(link);
       csvList.appendChild(li);

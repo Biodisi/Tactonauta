@@ -94,6 +94,37 @@ consumir esta API (no hace falta que sea JavaScript).
 | POST | `/api/procesar?formato=csv` | Igual, pero devuelve el CSV directo como descarga |
 | GET | `/api/resultados/<archivo>` | Sirve un CSV u overlay ya generado (para `<img>` o previsualización) |
 | GET | `/api/resultados/<archivo>/descargar` | Igual, forzando descarga |
+| POST | `/api/generar-stl` | Genera y devuelve una placa táctil STL de la Fase 1 |
+
+### Generar una placa táctil STL (Fase 1)
+
+Instala también `cadquery` (ya incluido en `requirements.txt`) y envía dos
+puntos expresados en milímetros. El resultado es una placa de 210 x 148 mm
+por defecto, con ejes, marcas y números Braille en relieve.
+
+```bash
+curl -X POST http://localhost:5000/api/generar-stl \
+  -H "Content-Type: application/json" \
+  -d '{"p1":[0,0],"p2":[150,90],"ancho":210,"alto":148,"intervalo_ticks":25}'
+```
+
+La respuesta contiene `stl_url` para visualizar/obtener el archivo y
+`stl_download_url` para descargarlo e imprimirlo en 3D.
+
+### PDF a STL automático
+
+Para procesar un PDF completo, detectar sus gráficas lineales, tomar los dos
+extremos de cada recta y crear un STL por cada una, usa `POST /api/pdf-a-stl` con el campo
+multipart `pdf`:
+
+```bash
+curl -F "pdf=@paper.pdf" http://localhost:5000/api/pdf-a-stl
+```
+
+La respuesta incluye una entrada en `stls` por cada gráfica lineal detectada.
+Cada entrada contiene las URLs del STL o un campo `error` si esa gráfica no
+pudo segmentarse. El generador usa los valores calibrados por OCR cuando están
+disponibles; si no lo están, usa las coordenadas de píxeles de los extremos.
 
 CORS está abierto (`Access-Control-Allow-Origin: *`) para que tu web,
 aunque esté en otro dominio o puerto, pueda llamar a la API sin

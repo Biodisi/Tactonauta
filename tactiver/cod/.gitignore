@@ -1,0 +1,7 @@
+# Entornos locales y archivos generados al ejecutar la API.
+.venv/
+__pycache__/
+*.py[cod]
+uploads/
+resultados/
+resultados_rapido/
