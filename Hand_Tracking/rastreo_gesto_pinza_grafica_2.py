@@ -116,10 +116,70 @@ def detener_audio():
     hablando.clear()
 
 # ============================================================
+# SELECCIÓN DE CÁMARA POR NOMBRE
+# ============================================================
+# OpenCV, por sí solo, no identifica cámaras por nombre: solo usa
+# índices numéricos (0, 1, 2...) y ese número puede variar entre
+# reinicios o al conectar/desconectar dispositivos USB. Para elegir
+# SIEMPRE la cámara correcta (por ejemplo, tu webcam "WN CAM-K211L"
+# y no la webcam integrada de la laptop), usamos la librería
+# 'pygrabber', que en Windows lee los nombres reales de los
+# dispositivos DirectShow — los mismos que muestra la app Cámara.
+#
+#   pip install pygrabber
+#
+# Si no está instalada, el programa avisa y cae de vuelta al
+# índice 0 (comportamiento anterior), para no dejar de funcionar.
+
+NOMBRE_CAMARA_DESEADA = "WN CAM-K211L"  # nombre tal cual aparece en la app Cámara
+
+
+def obtener_indice_por_nombre(nombre_buscado):
+    """Busca, entre las cámaras conectadas, el índice de OpenCV que
+    corresponde al dispositivo cuyo nombre contiene 'nombre_buscado'
+    (sin distinguir mayúsculas/minúsculas). Devuelve None si no la
+    encuentra o si 'pygrabber' no está instalado."""
+    try:
+        from pygrabber.dshow_graph import FilterGraph
+    except ImportError:
+        print(
+            "Aviso: no está instalado 'pygrabber' (pip install pygrabber). "
+            "No se puede buscar la cámara por nombre; se usará el índice 0."
+        )
+        return None
+
+    dispositivos = FilterGraph().get_input_devices()  # mismo orden que los índices de cv2
+
+    print("Cámaras detectadas:")
+    for indice, nombre in enumerate(dispositivos):
+        print(f"  [{indice}] {nombre}")
+
+    for indice, nombre in enumerate(dispositivos):
+        if nombre_buscado.lower() in nombre.lower():
+            return indice
+
+    return None
+
+
+indice_camara = obtener_indice_por_nombre(NOMBRE_CAMARA_DESEADA)
+
+if indice_camara is None:
+    print(
+        f"No se encontró ninguna cámara con el nombre '{NOMBRE_CAMARA_DESEADA}'. "
+        f"Usando la cámara por defecto (índice 0)."
+    )
+    indice_camara = 0
+else:
+    print(f"Usando la cámara '{NOMBRE_CAMARA_DESEADA}' (índice {indice_camara}).")
+
+# ============================================================
 # MEDIAPIPE
 # ============================================================
 mp_hands = mp.solutions.hands
-cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
+cap = cv2.VideoCapture(indice_camara, cv2.CAP_DSHOW)
+
+if not cap.isOpened():
+    print(f"No se pudo abrir la cámara en el índice {indice_camara}.")
 
 # ============================================================
 # PUNTOS DE LA GRÁFICA
@@ -306,7 +366,11 @@ with mp_hands.Hands(
 
         height, width, _ = frame.shape
 
-        frame = cv2.flip(frame, 1)     # Espejo
+        if indice_camara == 0:
+            frame = cv2.flip(frame, 1)     # Espejo en Eje Y
+        else:
+            frame = cv2.flip(frame, -1)     # Espejo en Eje Y y X
+            
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)     # BGR → RGB
         results = hands.process(frame_rgb)     # Procesar mano
         elemento_actual = None
